@@ -96,6 +96,19 @@ const typeDefs = `
     id: ID!
   }
 
+  type Mutation {
+    addBook(
+      title: String!
+      author: String!
+      published: Int!
+      genres: [String!]!
+     ): Book!
+     editAuthor(
+      name: String!
+      setBornTo: Int!
+     ): Author
+}
+
   type Query {
     authorCount: Int!
     bookCount: Int!
@@ -131,6 +144,37 @@ const resolvers = {
       }))
       console.log(authorDetails)
       return authorDetails
+    },
+  },
+  Mutation: {
+    addBook: (root, args) => {
+      const { title, author, published, genres } = args
+
+      let authorExists = authors.find(a => a.name === author)
+
+      if (!authorExists) {
+        const newAuthor = { name: author, id: uuidv4(), born: null }
+        authors.push(newAuthor)
+        authorExists = newAuthor
+      }
+
+      const newBook = { title, author, published, genres, id: uuidv4() }
+      books.push(newBook)
+      return newBook
+    },
+    editAuthor: (root, args) => {
+      const { name, setBornTo } = args
+      const author = authors.find(a => a.name === name)
+      if (!author) return null
+
+      const updatedAuthor = {
+        ...author,
+        born: setBornTo,
+        bookCount: books.filter(book => book.author === name).length,
+      }
+      authors = authors.map(a => (a.name === name ? updatedAuthor : a))
+      console.log(updatedAuthor)
+      return updatedAuthor
     },
   },
 }
