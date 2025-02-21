@@ -1,6 +1,26 @@
 import { ApolloServer } from '@apollo/server'
 import { startStandaloneServer } from '@apollo/server/standalone'
+import mongoose from 'mongoose'
+import dotenv from 'dotenv'
+import Author from './models/author.js'
+import Book from './models/book.js'
 import { v4 as uuidv4 } from 'uuid'
+
+mongoose.set('strictQuery', false)
+dotenv.config()
+
+const MONGODB_URI = process.env.MONGODB_URI
+
+console.log('conecting to..', MONGODB_URI)
+
+mongoose
+  .connect(MONGODB_URI)
+  .then(() => {
+    console.log('conected to MongoDB')
+  })
+  .catch(error => {
+    console.log('error connection to MongoDB', error.message)
+  })
 
 let authors = [
   {
@@ -91,7 +111,7 @@ const typeDefs = `
   type Book {
     title: String!
     published: Int!
-    author: String!
+    author: Author!
     genres: [String!]!
     id: ID!
   }
@@ -119,8 +139,8 @@ const typeDefs = `
 
 const resolvers = {
   Query: {
-    authorCount: () => authors.length,
-    bookCount: () => books.length,
+    authorCount: async () => Author.collection.countDocuments(),
+    bookCount: async () => Book.collection.countDocuments(),
     allBooks: (root, args) => {
       let filteredBooks = books
 
@@ -142,25 +162,28 @@ const resolvers = {
         ...author,
         bookCount: books.filter(book => book.author === author.name).length,
       }))
-      console.log(authorDetails)
       return authorDetails
     },
   },
   Mutation: {
-    addBook: (root, args) => {
-      const { title, author, published, genres } = args
+    addBook: async (root, args) => {
+      const { title, author: authorName, published, genres } = args
 
-      let authorExists = authors.find(a => a.name === author)
+      let author = await Author.findOne({ name: authorName })
 
-      if (!authorExists) {
-        const newAuthor = { name: author, id: uuidv4(), born: null }
-        authors.push(newAuthor)
-        authorExists = newAuthor
+      if (!author) {
+        author = new Author({ name: author })
+        await author.save()
       }
 
-      const newBook = { title, author, published, genres, id: uuidv4() }
-      books.push(newBook)
-      return newBook
+      const newBook = new Book({
+        title,
+        published,
+        genres,
+        author: author._id,
+      })
+      await newBook.save()
+      return newBook.populate('author')
     },
     editAuthor: (root, args) => {
       const { name, setBornTo } = args
@@ -173,7 +196,6 @@ const resolvers = {
         bookCount: books.filter(book => book.author === name).length,
       }
       authors = authors.map(a => (a.name === name ? updatedAuthor : a))
-      console.log(updatedAuthor)
       return updatedAuthor
     },
   },
