@@ -4,7 +4,6 @@ import mongoose from 'mongoose'
 import dotenv from 'dotenv'
 import Author from './models/author.js'
 import Book from './models/book.js'
-import { v4 as uuidv4 } from 'uuid'
 
 mongoose.set('strictQuery', false)
 dotenv.config()
@@ -141,27 +140,52 @@ const resolvers = {
   Query: {
     authorCount: async () => Author.collection.countDocuments(),
     bookCount: async () => Book.collection.countDocuments(),
-    allBooks: (root, args) => {
-      let filteredBooks = books
+    allBooks: async (root, args) => {
+      let filteredBooks = {}
 
       if (args.author) {
-        filteredBooks = filteredBooks.filter(
-          book => book.author === args.author
-        )
+        const author = await Author.findOne({ name: args.author })
+        if (author) {
+          filteredBooks.author = author._id
+        }
       }
 
-      if (args.genre) {
-        filteredBooks = filteredBooks.filter(book =>
-          book.genres.includes(args.genre)
-        )
+      if (args.genres) {
+        filteredBooks.genres = { $in: [args.genres] }
       }
-      return filteredBooks
+
+      const books = await Book.find(filteredBooks).populate('author')
+
+      const bookDetails = books.map(async book => {
+        console.log('book: ', book)
+        const bookCount = await Book.collection.countDocuments({
+          author: book.author._id,
+        })
+        console.log('bookCount: ', bookCount)
+        return {
+          ...book.toObject(),
+          id: book._id.toString(),
+          author: {
+            ...book.author.toObject(),
+            id: book.author._id.toString(),
+            bookCount,
+          },
+        }
+      })
+      return bookDetails
     },
-    allAuthors: () => {
-      const authorDetails = authors.map(author => ({
-        ...author,
-        bookCount: books.filter(book => book.author === author.name).length,
-      }))
+    allAuthors: async () => {
+      const authors = await Author.find({})
+      const authorDetails = authors.map(async author => {
+        const bookCount = await Book.collection.countDocuments({
+          author: author._id,
+        })
+        return {
+          ...author.toObject(),
+          id: author._id.toString(),
+          bookCount,
+        }
+      })
       return authorDetails
     },
   },
@@ -172,31 +196,29 @@ const resolvers = {
       let author = await Author.findOne({ name: authorName })
 
       if (!author) {
-        author = new Author({ name: author })
+        author = new Author({ name: authorName })
         await author.save()
       }
 
       const newBook = new Book({
         title,
         published,
-        genres,
         author: author._id,
+        genres,
       })
       await newBook.save()
+
       return newBook.populate('author')
     },
-    editAuthor: (root, args) => {
+    editAuthor: async (root, args) => {
       const { name, setBornTo } = args
-      const author = authors.find(a => a.name === name)
+      const author = await Author.findOne({ name })
+
       if (!author) return null
 
-      const updatedAuthor = {
-        ...author,
-        born: setBornTo,
-        bookCount: books.filter(book => book.author === name).length,
-      }
-      authors = authors.map(a => (a.name === name ? updatedAuthor : a))
-      return updatedAuthor
+      author.born = setBornTo
+      await author.save()
+      return author
     },
   },
 }
