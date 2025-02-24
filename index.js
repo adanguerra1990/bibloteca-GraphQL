@@ -4,11 +4,20 @@ import mongoose from 'mongoose'
 import dotenv from 'dotenv'
 import Author from './models/author.js'
 import Book from './models/book.js'
+import User from './models/user.js'
+import jwt from 'jsonwebtoken'
+import { GraphQLError } from 'graphql'
 
 mongoose.set('strictQuery', false)
 dotenv.config()
 
 const MONGODB_URI = process.env.MONGODB_URI
+
+const JWT_SECRET = process.env.JWT_SECRET
+
+if (!JWT_SECRET) {
+  throw new Error('JWT_SECRET is not defined')
+}
 
 console.log('conecting to..', MONGODB_URI)
 
@@ -100,6 +109,17 @@ let books = [
 ]
 
 const typeDefs = `
+  type User {
+    username: String!
+    favoriteGenre: String!
+    id: ID!
+  }
+
+  type Token {
+    value: String!
+  }
+    
+
   type Author {
     name: String!
     born: Int
@@ -120,12 +140,24 @@ const typeDefs = `
       title: String!
       author: String!
       published: Int!
+      
       genres: [String!]!
-     ): Book!
+      ): Book!
+     
      editAuthor(
       name: String!
       setBornTo: Int!
      ): Author
+
+     createUser(
+       username: String!
+       favoriteGenre: String!
+     ): User
+
+     login(
+       username: String!
+       password: String!
+     ): Token
 }
 
   type Query {
@@ -133,6 +165,7 @@ const typeDefs = `
     bookCount: Int!
     allBooks(author: String, genre: String): [Book!]!
     allAuthors: [Author!]!
+    me: User
   }
 `
 
@@ -188,37 +221,131 @@ const resolvers = {
       })
       return authorDetails
     },
+    me: (root, args, context) => {
+      return context.currentUser
+    },
   },
   Mutation: {
     addBook: async (root, args) => {
       const { title, author: authorName, published, genres } = args
 
-      let author = await Author.findOne({ name: authorName })
-
-      if (!author) {
-        author = new Author({ name: authorName })
-        await author.save()
+      if (title.length < 2) {
+        throw new GraphQLError('Title must be at least 2 characters long', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        })
       }
 
-      const newBook = new Book({
-        title,
-        published,
-        author: author._id,
-        genres,
-      })
-      await newBook.save()
+      if (authorName.length < 4) {
+        throw new GraphQLError(
+          'Author name must be at least 4 characters long',
+          {
+            extensions: { code: 'BAD_USER_INPUT' },
+          }
+        )
+      }
 
-      return newBook.populate('author')
+      try {
+        let author = await Author.findOne({ name: authorName })
+
+        if (!author) {
+          author = new Author({ name: authorName })
+          await author.save()
+        }
+
+        const newBook = new Book({
+          title,
+          published,
+          author: author._id,
+          genres,
+        })
+        await newBook.save()
+
+        return newBook.populate('author')
+      } catch (error) {
+        if (error.name === 'ValidationError') {
+          throw new GraphQLError(error.message, {
+            extensions: { code: 'BAD_USER_INPUT' },
+          })
+        }
+        throw new GraphQLError('Something went wrong', {
+          extensions: { code: 'INTERNAL_SERVER_ERROR' },
+        })
+      }
     },
     editAuthor: async (root, args) => {
       const { name, setBornTo } = args
+
       const author = await Author.findOne({ name })
 
-      if (!author) return null
+      if (!author) {
+        throw new GraphQLError('Author not found', {
+          extensions: { code: 'NOT_FOUND' },
+        })
+      }
+      try {
+        author.born = setBornTo
+        await author.save()
+        return author
+      } catch (error) {
+        if (error.name === 'ValidationError') {
+          throw new GraphQLError(error.message, {
+            extensions: { code: 'BAD_USER_INPUT' },
+          })
+        }
+        throw new GraphQLError('Something went wrong', {
+          extensions: { code: 'INTERNAL_SERVER_ERROR' },
+        })
+      }
+    },
 
-      author.born = setBornTo
-      await author.save()
-      return author
+    createUser: async (root, args) => {
+      const { username, favoriteGenre } = args
+
+      if (username.length < 3) {
+        throw new GraphQLError('Username must be at least 3 characters long', {
+          extensions: { code: 'BAD_USER_INPUT' },
+        })
+      }
+
+      try {
+        const user = new User({ username, favoriteGenre })
+        await user.save()
+        return user
+      } catch (error) {
+        if (error.name === 'ValidationError') {
+          throw new GraphQLError(error.message, {
+            extensions: { code: 'BAD_USER_INPUT' },
+          })
+        }
+        throw new GraphQLError('Something went wrong', {
+          extensions: { code: 'INTERNAL_SERVER_ERROR' },
+        })
+      }
+    },
+
+    login: async (root, args) => {
+      const { username, password } = args
+
+      if (password !== 'secret') {
+        throw new GraphQLError('Invalid password', {
+          extensions: { code: 'UNAUTHORIZED' },
+        })
+      }
+
+      const user = await User.findOne({ username })
+
+      if (!user) {
+        throw new GraphQLError('User not found', {
+          extensions: { code: 'NOT_FOUND' },
+        })
+      }
+
+      const userForToken = {
+        username: user.username,
+        id: user._id,
+      }
+
+      return { value: jwt.sign(userForToken, JWT_SECRET) }
     },
   },
 }
@@ -226,6 +353,23 @@ const resolvers = {
 const server = new ApolloServer({
   typeDefs,
   resolvers,
+
+  context: async ({ req, res }) => {
+    const auth = rep ? req.headers.authorization : null
+
+    if (auth && auth.startsWith('bearer ')) {
+      const token = auth.substring(7)
+      try {
+        const decodedToken = jwt.verify(token, JWT_SECRET)
+        const currentUser = await User.findById(decodedToken.id)
+        return { currentUser }
+      } catch (error) {
+        console.error('invalid token', error)
+      }
+    }
+
+    return { currentUser: null }
+  },
 })
 
 startStandaloneServer(server, {
