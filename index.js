@@ -190,11 +190,10 @@ const resolvers = {
       const books = await Book.find(filteredBooks).populate('author')
 
       const bookDetails = books.map(async book => {
-        console.log('book: ', book)
         const bookCount = await Book.collection.countDocuments({
           author: book.author._id,
         })
-        console.log('bookCount: ', bookCount)
+
         return {
           ...book.toObject(),
           id: book._id.toString(),
@@ -226,7 +225,13 @@ const resolvers = {
     },
   },
   Mutation: {
-    addBook: async (root, args) => {
+    addBook: async (root, args, context) => {
+      if (!context.currentUser) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHORIZED' },
+        })
+      }
+
       const { title, author: authorName, published, genres } = args
 
       if (title.length < 2) {
@@ -272,7 +277,7 @@ const resolvers = {
         })
       }
     },
-    editAuthor: async (root, args) => {
+    editAuthor: async (root, args, context) => {
       const { name, setBornTo } = args
 
       const author = await Author.findOne({ name })
@@ -282,6 +287,13 @@ const resolvers = {
           extensions: { code: 'NOT_FOUND' },
         })
       }
+
+      if (!context.currentUser) {
+        throw new GraphQLError('Not authenticated', {
+          extensions: { code: 'UNAUTHORIZED' },
+        })
+      }
+
       try {
         author.born = setBornTo
         await author.save()
@@ -353,11 +365,14 @@ const resolvers = {
 const server = new ApolloServer({
   typeDefs,
   resolvers,
+})
 
+startStandaloneServer(server, {
+  listen: { port: 4000 },
   context: async ({ req, res }) => {
-    const auth = rep ? req.headers.authorization : null
+    const auth = req ? req.headers.authorization : null
 
-    if (auth && auth.startsWith('bearer ')) {
+    if (auth && auth.toLowerCase().startsWith('bearer ')) {
       const token = auth.substring(7)
       try {
         const decodedToken = jwt.verify(token, JWT_SECRET)
@@ -370,10 +385,6 @@ const server = new ApolloServer({
 
     return { currentUser: null }
   },
-})
-
-startStandaloneServer(server, {
-  listen: { port: 4000 },
 }).then(({ url }) => {
   console.log(`Server ready at ${url}`)
 })
